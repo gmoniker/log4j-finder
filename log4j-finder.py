@@ -2,6 +2,7 @@
 #
 # file:     log4j-finder.py
 # author:   NCC Group / Fox-IT / Research and Intelligence Fusion Team (RIFT)
+#           filesystem recursing mods by gmoniker https://github.com/gmoniker all rights of original author retained
 #
 #  Scan the filesystem to find Log4j2 files that is vulnerable to Log4Shell (CVE-2021-44228)
 #  It scans recursively both on disk and inside Java Archive files (JARs).
@@ -30,7 +31,7 @@ import collections
 
 from pathlib import Path
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 FIGLET = f"""\
  __               _____  __         ___ __           __
 |  |.-----.-----.|  |  ||__|______.'  _|__|.-----.--|  |.-----.----.
@@ -62,6 +63,11 @@ FILENAMES = [
     ]
 ]
 
+BLOCKED_DIRS = {
+    ".git",
+    ".cvs",
+}
+
 # Known BAD
 MD5_BAD = {
     # JndiManager.class (source: https://github.com/nccgroup/Cyber-Defence/blob/master/Intelligence/CVE-2021-44228/modified-classes/md5sum.txt)
@@ -92,10 +98,11 @@ def md5_digest(fobj):
         d.update(buf)
     return d.hexdigest()
 
-
 def iter_scandir(path, stats=None):
     """
-    Yields all files matcthing JAR_EXTENSIONS or FILENAMES recursively in path
+    Yields all files matching JAR_EXTENSIONS or FILENAMES recursively in path
+    Directories in BLOCKED_DIRS or beneath them are not recursed
+    Any symlink (directory or file) is not considered for recursing or matching
     """
     p = Path(path)
     if p.is_file():
@@ -103,35 +110,25 @@ def iter_scandir(path, stats=None):
             stats["files"] += 1
         yield p
     try:
-        for entry in scantree(path, stats=stats):
-            if entry.is_symlink():
-                continue
-            elif entry.is_file():
-                name = entry.name.lower()
+        for path, dirnames, filenames in os.walk(path):
+            for name in filenames:
+                entry = Path(os.path.join(path, name))
+                if entry.is_symlink() or not entry.is_file():
+                    continue
+                log.debug(f"recursed: {os.path.join(path, name)}")
+                if stats:
+                    stats["files"] += 1
                 if name.endswith(JAR_EXTENSIONS):
-                    yield Path(entry.path)
-                elif name in FILENAMES:
-                    yield Path(entry.path)
-    except IOError as e:
-        log.debug(e)
-
-
-def scantree(path, stats=None):
-    """Recursively yield DirEntry objects for given directory."""
-    try:
-        with os.scandir(path) as it:
-            for entry in it:
-                if entry.is_dir(follow_symlinks=False):
-                    if stats:
-                        stats["directories"] += 1
-                    yield from scantree(entry.path, stats=stats)
-                else:
-                    if stats:
-                        stats["files"] += 1
                     yield entry
+                elif name in FILENAMES:
+                    yield entry
+                else:
+                    continue
+            for dirname in BLOCKED_DIRS:
+                if dirname in dirnames:
+                    dirnames.remove(dirname)
     except IOError as e:
         log.debug(e)
-
 
 def iter_jarfile(fobj, parents=None, stats=None):
     """
